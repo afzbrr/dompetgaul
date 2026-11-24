@@ -65,6 +65,9 @@ const FLOOD_MUTE_MS = 20000;
 
 let activeRestartTimer = null;
 let schemaHintLogged = false;
+let cachedWaVersion = null;
+let activeSock = null;
+const memoryUsers = new Map();
 
 process.on('unhandledRejection', (err) => {
   console.log('[DOMPET GAUL] Unhandled Rejection (bot tetap hidup):', err);
@@ -356,19 +359,28 @@ async function ensureOwnerRecord() {
 async function upsertUserActivity(phone, pushName, groupId) {
   const nowIso = new Date().toISOString();
   const isOwner = isOwnerPhone(phone);
-  const fallbackUser = {
-    phone,
-    username: isOwner ? 'faiz' : safeUsername(pushName, phone),
-    koin_gaul: isOwner ? OWNER_KOIN_VALUE : 0,
-    level: isOwner ? 99 : 1,
-    badge: isOwner ? '👑 BOS GAUL' : null,
-    is_owner: isOwner,
-    is_infinite: isOwner,
-    total_dapet: 0,
-    total_bagi: 0,
-    last_group_id: groupId || null,
-    last_chat: nowIso,
-  };
+  const existingMem = memoryUsers.get(phone);
+  const fallbackUser = existingMem
+    ? {
+        ...existingMem,
+        username: isOwner ? 'faiz' : (pushName && pushName.trim() ? safeUsername(pushName, phone) : existingMem.username),
+        last_group_id: groupId || existingMem.last_group_id || null,
+        last_chat: nowIso,
+      }
+    : {
+        phone,
+        username: isOwner ? 'faiz' : safeUsername(pushName, phone),
+        koin_gaul: isOwner ? OWNER_KOIN_VALUE : 0,
+        level: isOwner ? 99 : 1,
+        badge: isOwner ? '👑 BOS GAUL' : null,
+        is_owner: isOwner,
+        is_infinite: isOwner,
+        total_dapet: 0,
+        total_bagi: 0,
+        last_group_id: groupId || null,
+        last_chat: nowIso,
+      };
+  memoryUsers.set(phone, fallbackUser);
 
   try {
     const existingRes = logSupabaseError(
@@ -379,6 +391,9 @@ async function upsertUserActivity(phone, pushName, groupId) {
         .eq('phone', phone)
         .maybeSingle()
     );
+    if (existingRes.error) {
+      return fallbackUser;
+    }
     const existing = existingRes.data;
 
     if (!existing) {
@@ -390,7 +405,9 @@ async function upsertUserActivity(phone, pushName, groupId) {
           .select('*')
           .single()
       );
-      return insertRes.data || fallbackUser;
+      const saved = insertRes.data || fallbackUser;
+      memoryUsers.set(phone, saved);
+      return saved;
     }
 
     const updates = { last_chat: nowIso };
@@ -416,7 +433,9 @@ async function upsertUserActivity(phone, pushName, groupId) {
         .single()
     );
 
-    return updateRes.data || { ...existing, ...updates };
+    const saved = updateRes.data || { ...existing, ...updates };
+    memoryUsers.set(phone, saved);
+    return saved;
   } catch (err) {
     console.log('[SUPABASE EXCEPTION] upsertUserActivity:', err);
     return fallbackUser;
@@ -746,7 +765,7 @@ async function handleBotMessage(sock, msg) {
   const isGroup = remoteJid.endsWith('@g.us');
   const rawSenderJid = isGroup
     ? msg.key[SENDER_PN_FIELD] || msg.key[SENDER_FIELD] || remoteJid
-    : msg.key.senderPn || remoteJid;
+    : msg.key.senderPn || msg.key.remoteJidAlt || remoteJid;
   const senderPhone = normalizePhone(rawSenderJid);
   if (!senderPhone) return;
 
@@ -767,7 +786,7 @@ async function handleBotMessage(sock, msg) {
     }
   };
 
-  const fallbackUserObj = {
+  const fallbackUserObj = memoryUsers.get(senderPhone) || {
     phone: senderPhone,
     username: isOwnerPhone(senderPhone) ? 'faiz' : safeUsername(pushName, senderPhone),
     koin_gaul: isOwnerPhone(senderPhone) ? OWNER_KOIN_VALUE : 0,
@@ -778,29 +797,17 @@ async function handleBotMessage(sock, msg) {
     total_bagi: 0,
   };
 
-  let user = fallbackUserObj;
-  let groupInfo = null;
-  try {
-    [user, groupInfo] = await Promise.all([
-      withTimeout(upsertUserActivity(senderPhone, pushName, isGroup ? remoteJid : null), 3500, fallbackUserObj),
-      isGroup ? withTimeout(syncGroupInfo(sock, remoteJid), 3500, null) : Promise.resolve(null),
-    ]);
-  } catch (err) {
-    console.log(`[DOMPET GAUL] Gagal sync user/grup untuk ${senderPhone}:`, err);
-    user = fallbackUserObj;
-  }
-
-  try {
-    if (
-      !isOwnerPhone(senderPhone) &&
-      /\b(gue|aku|saya|gw)\s+(faiz|bos\s*gaul|owner\s*dompet\s*gaul|owner)\b/i.test(text)
-    ) {
-      await reply('lu bukan BOS GAUL yang asli');
-      return;
+  const syncUserAndGroup = async () => {
+    try {
+      return await Promise.all([
+        withTimeout(upsertUserActivity(senderPhone, pushName, isGroup ? remoteJid : null), 2000, fallbackUserObj),
+        isGroup ? withTimeout(syncGroupInfo(sock, remoteJid), 2000, null) : Promise.resolve(null),
+      ]);
+    } catch (err) {
+      console.log(`[DOMPET GAUL] Gagal sync user/grup untuk ${senderPhone}:`, err);
+      return [fallbackUserObj, null];
     }
-  } catch (err) {
-    console.log(`[DOMPET GAUL] Error cek klaim owner dari ${senderPhone}:`, err);
-  }
+  };
 
   if (text.startsWith('/')) {
     const parts = text.split(/\s+/);
@@ -820,6 +827,66 @@ async function handleBotMessage(sock, msg) {
       }
       return;
     }
+
+    if (cmd === '/start') {
+      void syncUserAndGroup();
+      try {
+        await reply(buildStartText());
+      } catch (err) {
+        await handleCommandFailure(cmd, senderPhone, reply, err);
+      }
+      return;
+    }
+
+    if (cmd === '/tutorial' || cmd === '/bantuan') {
+      void syncUserAndGroup();
+      try {
+        await reply(buildTutorialText());
+      } catch (err) {
+        await handleCommandFailure(cmd, senderPhone, reply, err);
+      }
+      return;
+    }
+
+    if (cmd === '/topup') {
+      void syncUserAndGroup();
+      try {
+        await reply(
+          [
+            'cara topup dompet gaul:',
+            '1. transfer ke rekening / e-wallet owner (chat owner buat detail)',
+            '2. kirim bukti ke owner',
+            '3. koin gaul lu bakal ditambahin manual',
+            `owner: ${OWNER_FULL_LABEL}`,
+            `nomor owner: ${OWNER_DISPLAY}`,
+            'chat owner buat topup ya!',
+          ].join('\n')
+        );
+      } catch (err) {
+        await handleCommandFailure(cmd, senderPhone, reply, err);
+      }
+      return;
+    }
+  }
+
+  const [user, groupInfo] = await syncUserAndGroup();
+
+  try {
+    if (
+      !isOwnerPhone(senderPhone) &&
+      /\b(gue|aku|saya|gw)\s+(faiz|bos\s*gaul|owner\s*dompet\s*gaul|owner)\b/i.test(text)
+    ) {
+      await reply('lu bukan BOS GAUL yang asli');
+      return;
+    }
+  } catch (err) {
+    console.log(`[DOMPET GAUL] Error cek klaim owner dari ${senderPhone}:`, err);
+  }
+
+  if (text.startsWith('/')) {
+    const parts = text.split(/\s+/);
+    const cmd = parts[0].split('@')[0].toLowerCase();
+    const argStr = text.slice(parts[0].length).trim();
 
     if (HIDDEN_OWNER_COMMANDS.has(cmd)) {
       try {
@@ -940,24 +1007,6 @@ async function handleBotMessage(sock, msg) {
       }
     }
 
-    if (cmd === '/start') {
-      try {
-        await reply(buildStartText());
-      } catch (err) {
-        await handleCommandFailure(cmd, senderPhone, reply, err);
-      }
-      return;
-    }
-
-    if (cmd === '/tutorial' || cmd === '/bantuan') {
-      try {
-        await reply(buildTutorialText());
-      } catch (err) {
-        await handleCommandFailure(cmd, senderPhone, reply, err);
-      }
-      return;
-    }
-
     if (cmd === '/saldo') {
       try {
         if (isOwnerPhone(user.phone) || user.is_owner) {
@@ -990,6 +1039,13 @@ async function handleBotMessage(sock, msg) {
               })
               .eq('phone', user.phone)
           );
+          memoryUsers.set(user.phone, {
+            ...user,
+            koin_gaul: currentKoin,
+            total_dapet: currentDapet,
+            level: currentLevel,
+            last_daily: today,
+          });
           if (!updDailyRes.error) {
             logSupabaseError(
               'saldo.insertDailyTx',
@@ -1005,12 +1061,8 @@ async function handleBotMessage(sock, msg) {
                 keterangan: 'bonus daily +50 koin gaul',
               })
             );
-            dailyLine = '\nbonus daily +50 koin gaul!';
-          } else {
-            currentKoin = Number(user.koin_gaul || 0);
-            currentDapet = Number(user.total_dapet || 0);
-            currentLevel = calcLevel(currentDapet, false);
           }
+          dailyLine = '\nbonus daily +50 koin gaul!';
         }
 
         await reply(
@@ -1325,25 +1377,6 @@ async function handleBotMessage(sock, msg) {
 
         await reply(
           `${displayActorName(user)} bikin kuis! pertanyaan: ${pertanyaan} hadiah: ${formatAngka(hadiah)} koin gaul! jawab langsung di grup ini!`
-        );
-      } catch (err) {
-        await handleCommandFailure(cmd, senderPhone, reply, err);
-      }
-      return;
-    }
-
-    if (cmd === '/topup') {
-      try {
-        await reply(
-          [
-            'cara topup dompet gaul:',
-            '1. transfer ke rekening / e-wallet owner (chat owner buat detail)',
-            '2. kirim bukti ke owner',
-            '3. koin gaul lu bakal ditambahin manual',
-            `owner: ${OWNER_FULL_LABEL}`,
-            `nomor owner: ${OWNER_DISPLAY}`,
-            'chat owner buat topup ya!',
-          ].join('\n')
         );
       } catch (err) {
         await handleCommandFailure(cmd, senderPhone, reply, err);
@@ -2145,14 +2178,30 @@ async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued) {
 }
 
 async function startBot() {
-  try {
-    await ensureOwnerRecord();
-  } catch (err) {
-    console.error('[DOMPET GAUL] Gagal sync owner awal:', err?.message || err);
+  if (activeSock) {
+    try {
+      activeSock.ev.removeAllListeners();
+      activeSock.ws?.close();
+    } catch {
+      // abaikan error cleanup socket lama
+    }
+    activeSock = null;
   }
 
+  void ensureOwnerRecord();
+
   const { state, saveCreds } = await useMultiFileAuthState('./session');
-  const { version } = await fetchLatestBaileysVersion();
+  if (!cachedWaVersion) {
+    try {
+      const verRes = await withTimeout(fetchLatestBaileysVersion(), 5000, null);
+      if (verRes?.version) {
+        cachedWaVersion = verRes.version;
+      }
+    } catch (err) {
+      console.log('[DOMPET GAUL] Gagal ambil versi WA terbaru, pakai default:', err?.message || err);
+    }
+  }
+  const version = cachedWaVersion || [2, 3000, 1019707846];
   const isAlreadyRegistered = Boolean(state?.creds?.registered);
   const sock = makeWASocket({
     version,
@@ -2165,6 +2214,7 @@ async function startBot() {
     [PAIRING_TIMEOUT_FIELD]: PAIRING_TTL_MS,
     syncFullHistory: false,
   });
+  activeSock = sock;
 
   let closed = false;
   let restarted = false;
