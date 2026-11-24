@@ -1,4 +1,4 @@
-global.WebSocket = require('ws');
+const ws = require('ws');
 require('dotenv').config();
 const {
   makeWASocket,
@@ -20,9 +20,15 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   process.exit(1);
 }
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+const supabase = createClient(
+  SUPABASE_URL,
+  SUPABASE_SERVICE_KEY,
+  {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { WebSocket: ws },
+    realtime: { transport: ws }
+  }
+);
 
 const BOT_PHONE_DEFAULT = '6285743794723';
 const BOT_DISPLAY = '085743794723';
