@@ -169,6 +169,28 @@ create table if not exists dompetgaul_pengaduan (
   created_at timestamptz default now()
 );
 
+-- Jika tabel sudah terlanjur dibuat sebelumnya dan ada kolom yang kurang (misal kolom phone):
+alter table dompetgaul_users add column if not exists phone text;
+alter table dompetgaul_users add column if not exists username text default 'member';
+alter table dompetgaul_users add column if not exists koin_gaul bigint default 0;
+alter table dompetgaul_users add column if not exists level integer default 1;
+alter table dompetgaul_users add column if not exists badge text;
+alter table dompetgaul_users add column if not exists is_owner boolean default false;
+alter table dompetgaul_users add column if not exists is_infinite boolean default false;
+alter table dompetgaul_users add column if not exists total_dapet bigint default 0;
+alter table dompetgaul_users add column if not exists total_bagi bigint default 0;
+alter table dompetgaul_users add column if not exists total_ikut_rebutan integer default 0;
+alter table dompetgaul_users add column if not exists total_menang_rebutan integer default 0;
+alter table dompetgaul_users add column if not exists total_ikut_rebutanrame integer default 0;
+alter table dompetgaul_users add column if not exists total_ikut_kuis integer default 0;
+alter table dompetgaul_users add column if not exists total_menang_kuis integer default 0;
+alter table dompetgaul_users add column if not exists total_ikut_tantangan integer default 0;
+alter table dompetgaul_users add column if not exists last_group_id text;
+alter table dompetgaul_users add column if not exists last_chat timestamptz default now();
+alter table dompetgaul_users add column if not exists last_daily date;
+alter table dompetgaul_users add column if not exists created_at timestamptz default now();
+create unique index if not exists dompetgaul_users_phone_uidx on dompetgaul_users (phone);
+
 -- Seed Owner: 👑 BOS GAUL - FAIZ (085854563721)
 insert into dompetgaul_users (
   phone, username, koin_gaul, level, badge, is_owner, is_infinite

@@ -64,6 +64,7 @@ const FLOOD_MAX_COMMANDS = 5;
 const FLOOD_MUTE_MS = 20000;
 
 let activeRestartTimer = null;
+let schemaHintLogged = false;
 
 process.on('unhandledRejection', (err) => {
   console.log('[DOMPET GAUL] Unhandled Rejection (bot tetap hidup):', err);
@@ -76,8 +77,24 @@ process.on('uncaughtException', (err) => {
 function logSupabaseError(context, res) {
   if (res && res.error) {
     console.log(`[SUPABASE ERROR] ${context}:`, res.error);
+    if (!schemaHintLogged && (res.error.code === '42703' || res.error.code === '42P01')) {
+      schemaHintLogged = true;
+      console.log(
+        '[SUPABASE HINT] Skema tabel Supabase belum lengkap (kolom/tabel tidak ditemukan). Jalankan SQL ALTER TABLE / CREATE TABLE dari README.md di Supabase SQL Editor!'
+      );
+    }
   }
   return res;
+}
+
+function withTimeout(promise, ms, fallbackValue) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(fallbackValue), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 async function handleCommandFailure(cmd, senderPhone, reply, err) {
@@ -143,6 +160,24 @@ function extractMessageText(msg) {
   if (m.imageMessage?.caption) return m.imageMessage.caption;
   if (m.videoMessage?.caption) return m.videoMessage.caption;
   if (m.documentMessage?.caption) return m.documentMessage.caption;
+  if (m.buttonsResponseMessage?.selectedDisplayText) {
+    return m.buttonsResponseMessage.selectedDisplayText;
+  }
+  if (m.templateButtonReplyMessage?.selectedDisplayText) {
+    return m.templateButtonReplyMessage.selectedDisplayText;
+  }
+  if (m.listResponseMessage?.title) {
+    return m.listResponseMessage.title;
+  }
+  if (m.deviceSentMessage?.message) {
+    return extractMessageText({ message: m.deviceSentMessage.message });
+  }
+  if (m.editedMessage?.message) {
+    return extractMessageText({ message: m.editedMessage.message });
+  }
+  if (m.documentWithCaptionMessage?.message) {
+    return extractMessageText({ message: m.documentWithCaptionMessage.message });
+  }
   if (m.ephemeralMessage?.message) {
     return extractMessageText({ message: m.ephemeralMessage.message });
   }
@@ -151,6 +186,9 @@ function extractMessageText(msg) {
   }
   if (m.viewOnceMessageV2?.message) {
     return extractMessageText({ message: m.viewOnceMessageV2.message });
+  }
+  if (m.viewOnceMessageV2Extension?.message) {
+    return extractMessageText({ message: m.viewOnceMessageV2Extension.message });
   }
   return '';
 }
@@ -449,12 +487,12 @@ async function syncGroupInfo(sock, groupId) {
     }
 
     try {
-      const meta = await sock.groupMetadata(groupId);
+      const meta = await withTimeout(sock.groupMetadata(groupId), 3000, null);
       if (meta?.subject) {
         groupName = meta.subject;
       }
       try {
-        const code = await sock.groupInviteCode(groupId);
+        const code = await withTimeout(sock.groupInviteCode(groupId), 3000, null);
         if (code) {
           groupLink = `https://chat.whatsapp.com/${code}`;
         }
@@ -714,35 +752,43 @@ async function handleBotMessage(sock, msg) {
 
   const text = extractMessageText(msg).trim();
   const pushName = msg.pushName || '';
+  if (!text) return;
+
+  console.log(`[MSG MASUK] ${isGroup ? 'grup' : 'pc'} | dari ${senderPhone}: ${text.slice(0, 80)}`);
 
   const reply = async (content, mentions = []) => {
     const payload = { text: content };
     if (mentions.length > 0) payload.mentions = mentions;
-    return sock.sendMessage(remoteJid, payload, { quoted: msg });
+    try {
+      return await sock.sendMessage(remoteJid, payload, { quoted: msg });
+    } catch (quoteErr) {
+      console.log(`[DOMPET GAUL] Fallback kirim tanpa quote ke ${remoteJid}:`, quoteErr?.message || quoteErr);
+      return await sock.sendMessage(remoteJid, payload);
+    }
   };
 
-  let user;
+  const fallbackUserObj = {
+    phone: senderPhone,
+    username: isOwnerPhone(senderPhone) ? 'faiz' : safeUsername(pushName, senderPhone),
+    koin_gaul: isOwnerPhone(senderPhone) ? OWNER_KOIN_VALUE : 0,
+    level: isOwnerPhone(senderPhone) ? 99 : 1,
+    is_owner: isOwnerPhone(senderPhone),
+    is_infinite: isOwnerPhone(senderPhone),
+    total_dapet: 0,
+    total_bagi: 0,
+  };
+
+  let user = fallbackUserObj;
   let groupInfo = null;
   try {
     [user, groupInfo] = await Promise.all([
-      upsertUserActivity(senderPhone, pushName, isGroup ? remoteJid : null),
-      isGroup ? syncGroupInfo(sock, remoteJid) : Promise.resolve(null),
+      withTimeout(upsertUserActivity(senderPhone, pushName, isGroup ? remoteJid : null), 3500, fallbackUserObj),
+      isGroup ? withTimeout(syncGroupInfo(sock, remoteJid), 3500, null) : Promise.resolve(null),
     ]);
   } catch (err) {
     console.log(`[DOMPET GAUL] Gagal sync user/grup untuk ${senderPhone}:`, err);
-    user = {
-      phone: senderPhone,
-      username: isOwnerPhone(senderPhone) ? 'faiz' : safeUsername(pushName, senderPhone),
-      koin_gaul: isOwnerPhone(senderPhone) ? OWNER_KOIN_VALUE : 0,
-      level: isOwnerPhone(senderPhone) ? 99 : 1,
-      is_owner: isOwnerPhone(senderPhone),
-      is_infinite: isOwnerPhone(senderPhone),
-      total_dapet: 0,
-      total_bagi: 0,
-    };
+    user = fallbackUserObj;
   }
-
-  if (!text) return;
 
   try {
     if (
@@ -944,24 +990,27 @@ async function handleBotMessage(sock, msg) {
               })
               .eq('phone', user.phone)
           );
-          if (updDailyRes.error) throw updDailyRes.error;
-
-          logSupabaseError(
-            'saldo.insertDailyTx',
-            await supabase.from('dompetgaul_transaksi').insert({
-              group_id: isGroup ? remoteJid : null,
-              group_name: groupInfo?.group_name || null,
-              from_phone: 'SYSTEM',
-              from_name: 'DOMPET GAUL',
-              to_phone: user.phone,
-              to_name: user.username,
-              jumlah: 50,
-              tipe: 'daily',
-              keterangan: 'bonus daily +50 koin gaul',
-            })
-          );
-
-          dailyLine = '\nbonus daily +50 koin gaul!';
+          if (!updDailyRes.error) {
+            logSupabaseError(
+              'saldo.insertDailyTx',
+              await supabase.from('dompetgaul_transaksi').insert({
+                group_id: isGroup ? remoteJid : null,
+                group_name: groupInfo?.group_name || null,
+                from_phone: 'SYSTEM',
+                from_name: 'DOMPET GAUL',
+                to_phone: user.phone,
+                to_name: user.username,
+                jumlah: 50,
+                tipe: 'daily',
+                keterangan: 'bonus daily +50 koin gaul',
+              })
+            );
+            dailyLine = '\nbonus daily +50 koin gaul!';
+          } else {
+            currentKoin = Number(user.koin_gaul || 0);
+            currentDapet = Number(user.total_dapet || 0);
+            currentLevel = calcLevel(currentDapet, false);
+          }
         }
 
         await reply(
@@ -2104,13 +2153,14 @@ async function startBot() {
 
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
+  const isAlreadyRegistered = Boolean(state?.creds?.registered);
   const sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
     browser: Browsers.ubuntu('Chrome'),
-    connectTimeoutMs: PAIRING_TTL_MS,
-    defaultQueryTimeoutMs: undefined,
+    connectTimeoutMs: isAlreadyRegistered ? 60000 : PAIRING_TTL_MS,
+    defaultQueryTimeoutMs: isAlreadyRegistered ? 60000 : undefined,
     keepAliveIntervalMs: 30000,
     [PAIRING_TIMEOUT_FIELD]: PAIRING_TTL_MS,
     syncFullHistory: false,
@@ -2252,6 +2302,7 @@ async function startBot() {
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     try {
       if (type !== 'notify' || !Array.isArray(messages)) return;
+      console.log(`[UPSERT] type=${type}, total=${messages.length}`);
       for (const msg of messages) {
         try {
           await handleBotMessage(sock, msg);
