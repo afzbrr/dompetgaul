@@ -2,16 +2,16 @@
 
 `dompet gaul, bagi-bagi gak pake jaim`
 
-Struktur repo terpisah untuk deploy **Dashboard Web** ke **Vercel** dan **Bot WhatsApp Baileys** ke **Railway**:
+Struktur repo terpisah untuk **Dashboard Web** di **Vercel** dan **Bot WhatsApp Baileys** di **Railway**:
 
-- `/web` — Dashboard Web DOMPET GAUL (Vite + React + Tailwind) untuk Vercel
-- `/bot` — Bot WhatsApp Baileys (`index.js`, `package.json`, `.env.example`) untuk Railway
+- `/web` — Dashboard Web DOMPET GAUL (Vite + React) untuk Vercel (`Root Directory = /web`)
+- `/bot` — Bot WhatsApp Baileys murni (`index.js`, `package.json`, `.env.example`, `railway.json`) untuk Railway (`Root Directory = /bot`)
 
 ---
 
 ## 1. Setup Database Supabase
 
-Buka **SQL Editor** di dashboard Supabase, lalu jalankan query di bawah ini untuk membuat 10 tabel `dompetgaul_*`:
+Jalankan SQL berikut di **SQL Editor** Supabase untuk membuat 10 tabel `dompetgaul_*`:
 
 ```sql
 create extension if not exists pgcrypto;
@@ -184,47 +184,48 @@ on conflict (phone) do update set
   is_infinite = true;
 ```
 
-Jika menggunakan RLS (Row Level Security) di Supabase untuk akses dashboard web (`anon` key):
-- Aktifkan `SELECT` publik untuk `dompetgaul_users`, `dompetgaul_groups`, `dompetgaul_rebutan`, `dompetgaul_rebutanrame`, `dompetgaul_dombut`, `dompetgaul_kuis`, `dompetgaul_tantangan`, `dompetgaul_transaksi`, `dompetgaul_claims`, dan `dompetgaul_pengaduan`.
-- Aktifkan `INSERT` & `UPDATE` untuk fitur klaim `/claim/[code]` (`dompetgaul_dombut`, `dompetgaul_claims`, `dompetgaul_users`, `dompetgaul_transaksi`) serta update status `dompetgaul_pengaduan` dari halaman owner.
-
 ---
 
-## 2. Deploy Dashboard Web ke Vercel (`/web`)
+## 2. Cara Deploy Vercel (Root `/web`)
 
 1. Push repo ini ke GitHub.
 2. Buka **Vercel -> Add New Project -> Import Repository**.
-3. Pada **Root Directory**, isi: `web`
-4. Framework Preset akan otomatis terdeteksi **Vite**.
-5. Tambahkan **Environment Variables**:
+3. Isi **Root Directory**: `/web` (atau `web`).
+4. Tambahkan **Environment Variables**:
    - `VITE_SUPABASE_URL` = URL project Supabase
    - `VITE_SUPABASE_ANON_KEY` = Anon Key Supabase
-   - `VITE_OWNER_PIN` = (opsional) PIN tambahan untuk buka halaman pengaduan owner
-6. Klik **Deploy**. Link `/claim/ABC123` akan otomatis ditangani oleh `/web/vercel.json`.
+5. Klik **Deploy**. Rute `/claim/[code]` otomatis ditangani oleh `/web/vercel.json`.
 
 ---
 
-## 3. Deploy Bot WA ke Railway (`/bot`)
+## 3. Cara Deploy Railway (Root `/bot`)
 
 1. Buka **Railway -> New Project -> Deploy from GitHub repo**.
-2. Masuk ke **Settings -> Source -> Root Directory**, isi: `bot`
-3. Pastikan **Start Command** adalah `npm start` (menjalankan `node index.js`).
-4. (Disarankan) Tambahkan **Railway Volume** mounted ke `/app/auth_info` supaya sesi login WhatsApp tidak hilang saat redeploy.
+2. Masuk ke **Settings -> Source -> Root Directory**, isi: `/bot` (atau `bot`).
+3. Railway akan membaca `/bot/railway.json` dan menjalankan `node index.js` tanpa web server/Express.
+4. (Disarankan) Pasang **Railway Volume** ke `/app/session` agar sesi WhatsApp di `./session` tetap tersimpan saat redeploy.
 5. Tambahkan **Variables**:
+   - `PHONE_NUMBER` = nomor WhatsApp bot tanpa `+` (contoh: `6281234567890`)
    - `SUPABASE_URL` = URL project Supabase
    - `SUPABASE_SERVICE_KEY` = Service Role Key Supabase
    - `WEB_URL` = URL Vercel dashboard (contoh: `https://dompetgaul.vercel.app`)
-   - `AUTH_DIR` = `/app/auth_info` (atau `./auth_info`)
 
 ---
 
-## 4. Cara Scan QR WhatsApp di Railway
+## 4. Cara Pairing Code
 
-1. Setelah deploy di Railway selesai, buka tab **Deployments -> View Logs**.
-2. Tunggu beberapa detik sampai muncul teks:
-   `[DOMPET GAUL] Scan QR WhatsApp di bawah ini:` diikuti QR Code ASCII.
-3. Buka **WhatsApp** di HP -> **Perangkat Tertaut (Linked Devices)** -> **Tautkan Perangkat**.
-4. Arahkan kamera ke QR Code di Railway Logs.
-5. Setelah berhasil tersambung, log akan menampilkan:
-   `[DOMPET GAUL] Bot WhatsApp @DompetGaul_bot siap dan online!`
-6. Masukkan bot ke grup WhatsApp dan jadikan admin grup supaya link grup (`https://chat.whatsapp.com/...`) otomatis tampil di `/leaderboard`.
+1. Setelah deploy di Railway berjalan, buka tab **Deployments -> View Logs**.
+2. Tunggu sekitar 3 detik hingga muncul log:
+   ```
+   BELUM TERPAIRING, MEMINTA PAIRING CODE...
+   =================================
+   PAIRING CODE: XXXX-XXXX
+   PAIRING CODE: XXXX-XXXX
+   PAIRING CODE: XXXX-XXXX
+   Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon
+   =================================
+   ```
+3. Buka **WhatsApp di HP** nomor bot -> **Perangkat Tertaut** -> **Tautkan Perangkat** -> **Tautkan dengan nomor telepon saja**.
+4. Masukkan kode **PAIRING CODE** dari Logs.
+5. Jika sudah tersambung, Logs menampilkan `BOT CONNECTED - BOT ONLINE`.
+6. Masukkan bot ke grup WhatsApp dan jadikan admin grup agar link undangan grup tampil di `/leaderboard`.

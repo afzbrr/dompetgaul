@@ -60,8 +60,8 @@ export function HistoryView({ transaksi, totalKoinDibagi, loading }: HistoryView
           <p className="py-4 text-sm text-[#6b4f5d]">belum ada riwayat transaksi.</p>
         ) : (
           <ul className="divide-y divide-[#1a1015]/10">
-            {filtered.map((tx) => (
-              <li key={tx.id} className="py-3 flex items-start justify-between gap-3">
+            {filtered.map((tx, idx) => (
+              <li key={`tx-${tx.id ?? 'row'}-${idx}`} className="py-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-[#1a1015] truncate">
                     {tx.from_name} ke {tx.to_name}
@@ -130,8 +130,8 @@ export function ActiveEventsView({
               </p>
             ) : (
               <ul className="divide-y divide-[#1a1015]/10">
-                {kuis.map((q) => (
-                  <li key={q.id} className="py-3 space-y-1">
+                {kuis.map((q, idx) => (
+                  <li key={`kuis-${q.id ?? 'row'}-${idx}`} className="py-3 space-y-1">
                     <p className="text-sm font-semibold text-[#1a1015]">{q.pertanyaan}</p>
                     <p className="text-xs text-[#6b4f5d] font-mono-num">
                       hadiah {formatKoin(q.hadiah)} koin gaul · dari {q.creator_name} · di{' '}
@@ -153,8 +153,8 @@ export function ActiveEventsView({
               </p>
             ) : (
               <ul className="divide-y divide-[#1a1015]/10">
-                {tantangan.map((item) => (
-                  <li key={item.id} className="py-3 space-y-1">
+                {tantangan.map((item, idx) => (
+                  <li key={`tantangan-${item.id ?? 'row'}-${idx}`} className="py-3 space-y-1">
                     <p className="text-sm font-semibold text-[#1a1015]">{item.judul}</p>
                     <p className="text-xs text-[#6b4f5d] font-mono-num">
                       hadiah {formatKoin(item.hadiah)} koin gaul · dari {item.creator_name} · di{' '}
@@ -176,8 +176,8 @@ export function ActiveEventsView({
               </p>
             ) : (
               <ul className="divide-y divide-[#1a1015]/10">
-                {rebutan.map((r) => (
-                  <li key={r.id} className="py-3 space-y-1">
+                {rebutan.map((r, idx) => (
+                  <li key={`rebutan-${r.id ?? 'row'}-${idx}`} className="py-3 space-y-1">
                     <p className="text-sm font-semibold text-[#1a1015]">
                       kata kunci: {r.keyword}
                     </p>

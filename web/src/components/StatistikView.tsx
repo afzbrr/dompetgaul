@@ -158,8 +158,8 @@ export function StatistikView({
               onChange={(e) => setSelectedGroupId(e.target.value)}
               className="min-h-[44px] w-full rounded-xl border border-[#1a1015]/15 bg-white px-3 text-sm text-[#1a1015] focus:outline-none focus:border-[#1a1015]"
             >
-              {groups.map((g) => (
-                <option key={g.group_id} value={g.group_id}>
+              {groups.map((g, idx) => (
+                <option key={`grp-opt-${g.group_id ?? g.id ?? 'row'}-${idx}`} value={g.group_id}>
                   {g.group_name}
                 </option>
               ))}

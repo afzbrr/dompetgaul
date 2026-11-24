@@ -94,7 +94,7 @@ export function LeaderboardView({
               {sortedUsers.map((u, idx) => {
                 const owner = isOwnerUser(u);
                 return (
-                  <li key={u.id || u.phone} className="py-3 flex items-start justify-between gap-3">
+                  <li key={`user-${u.id ?? u.phone ?? 'row'}-${idx}`} className="py-3 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-[#1a1015] truncate">
                         <span className="mr-1.5 font-mono-num">{rankPrefix(idx)}</span>
@@ -134,7 +134,7 @@ export function LeaderboardView({
               {sortedGroups.map((g, idx) => {
                 const validLink = isValidWhatsappGroupLink(g.group_link);
                 return (
-                  <li key={g.id || g.group_id} className="py-3.5 space-y-2">
+                  <li key={`group-${g.id ?? g.group_id ?? 'row'}-${idx}`} className="py-3.5 space-y-2">
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-sm font-bold text-[#1a1015]">
                         <span className="mr-1.5 font-mono-num">{rankPrefix(idx)}</span>

@@ -109,8 +109,8 @@ export function PengaduanOwnerView({ pengaduan, onRefresh }: PengaduanOwnerViewP
         <p className="py-4 text-sm text-[#6b4f5d]">belum ada pengaduan dari user.</p>
       ) : (
         <ul className="divide-y divide-[#1a1015]/10">
-          {pengaduan.map((item) => (
-            <li key={item.id} className="py-3 space-y-2">
+          {pengaduan.map((item, idx) => (
+            <li key={`pengaduan-${item.id ?? 'row'}-${idx}`} className="py-3 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-sm font-semibold text-[#1a1015]">{item.from_name}</span>
                 <span className="text-xs text-[#6b4f5d] font-mono-num">

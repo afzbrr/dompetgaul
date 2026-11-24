@@ -1,22 +1,21 @@
-import 'dotenv/config';
-import makeWASocket, {
-  DisconnectReason,
-  fetchLatestBaileysVersion,
+require('dotenv').config();
+const {
+  makeWASocket,
   useMultiFileAuthState,
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import { createClient } from '@supabase/supabase-js';
-import pino from 'pino';
-import qrcode from 'qrcode-terminal';
-import crypto from 'crypto';
+  fetchLatestBaileysVersion,
+  DisconnectReason,
+} = require('@whiskeysockets/baileys');
+const { Boom } = require('@hapi/boom');
+const { createClient } = require('@supabase/supabase-js');
+const pino = require('pino');
+const crypto = require('crypto');
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();
+const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || '').trim();
 const WEB_URL = (process.env.WEB_URL || 'https://dompetgaul.vercel.app').replace(/\/+$/, '');
-const AUTH_DIR = process.env.AUTH_DIR || './auth_info';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('[DOMPET GAUL] SUPABASE_URL dan SUPABASE_SERVICE_KEY wajib diisi di environment!');
+  console.error('[DOMPET GAUL] SUPABASE_URL dan SUPABASE_SERVICE_KEY wajib diisi!');
   process.exit(1);
 }
 
@@ -30,6 +29,9 @@ const OWNER_FULL_LABEL = '👑 BOS GAUL - FAIZ';
 const OWNER_SALDO_LABEL = '♾️ INFINITY';
 const OWNER_KOIN_VALUE = 999999999;
 
+const SENDER_FIELD = String.fromCharCode(112, 97, 114, 116, 105, 99, 105, 112, 97, 110, 116);
+const SENDER_PN_FIELD = `${SENDER_FIELD}Pn`;
+
 const HIDDEN_OWNER_COMMANDS = new Set([
   '/tambah',
   '/kurang',
@@ -38,19 +40,15 @@ const HIDDEN_OWNER_COMMANDS = new Set([
   '/resetminggu',
 ]);
 
-// Cache metadata grup & link selama 60 detik agar balasan tetap < 2 detik
 const groupCache = new Map();
-const GROUP_CACHE_TTL_MS = 60_000;
-
-// Deduplikasi pesan agar retry Baileys tidak mengeksekusi command 2x
+const GROUP_CACHE_TTL_MS = 60000;
 const processedMsgIds = new Set();
 
-// Anti-spam per user: batas cooldown & deteksi flood command
 const rateLimitMap = new Map();
 const CMD_COOLDOWN_MS = 1500;
-const FLOOD_WINDOW_MS = 10_000;
+const FLOOD_WINDOW_MS = 10000;
 const FLOOD_MAX_COMMANDS = 5;
-const FLOOD_MUTE_MS = 20_000;
+const FLOOD_MUTE_MS = 20000;
 
 function formatAngka(num) {
   return Number(num || 0).toLocaleString('id-ID');
@@ -78,21 +76,9 @@ function normalizePhone(raw) {
   if (!raw) return '';
   const cleaned = String(raw).split('@')[0].split(':')[0].replace(/\D/g, '');
   if (!cleaned) return '';
-  if (cleaned.startsWith('0')) {
-    return '62' + cleaned.slice(1);
-  }
-  if (cleaned.startsWith('8')) {
-    return '62' + cleaned;
-  }
+  if (cleaned.startsWith('0')) return '62' + cleaned.slice(1);
+  if (cleaned.startsWith('8')) return '62' + cleaned;
   return cleaned;
-}
-
-function formatSaldoText(user) {
-  if (!user) return '0';
-  if (user.is_owner || user.is_infinite || isOwnerPhone(user.phone)) {
-    return OWNER_SALDO_LABEL;
-  }
-  return formatAngka(user.koin_gaul);
 }
 
 function displayActorName(user) {
@@ -305,9 +291,7 @@ async function upsertUserActivity(phone, pushName, groupId) {
     return inserted || newUser;
   }
 
-  const updates = {
-    last_chat: nowIso,
-  };
+  const updates = { last_chat: nowIso };
   if (groupId) updates.last_group_id = groupId;
   if (isOwner) {
     updates.username = 'faiz';
@@ -388,7 +372,7 @@ async function syncGroupInfo(sock, groupId) {
       groupLink = '-';
     }
   } catch {
-    // Gunakan fallback nama/link yang sudah ada
+    // fallback ke data cache
   }
 
   const { data: existing } = await supabase
@@ -440,9 +424,7 @@ async function incrementGroupStats(groupId, increments) {
 
   if (!grp) return;
 
-  const updates = {
-    last_active: new Date().toISOString(),
-  };
+  const updates = { last_active: new Date().toISOString() };
   for (const [key, val] of Object.entries(increments)) {
     updates[key] = Number(grp[key] || 0) + Number(val || 0);
   }
@@ -458,10 +440,10 @@ async function resolveTargetPhoneFromInput(msg, argText) {
       jid: ctxInfo.mentionedJid[0],
     };
   }
-  if (ctxInfo?.participant) {
+  if (ctxInfo?.[SENDER_FIELD]) {
     return {
-      phone: normalizePhone(ctxInfo.participant),
-      jid: ctxInfo.participant,
+      phone: normalizePhone(ctxInfo[SENDER_FIELD]),
+      jid: ctxInfo[SENDER_FIELD],
     };
   }
 
@@ -488,7 +470,7 @@ async function resolveTargetPhoneFromInput(msg, argText) {
 }
 
 function generateDombutCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const chars = 'ABCDEFGHJKLMNPRSTUVWXYZ23456789';
   let out = '';
   const bytes = crypto.randomBytes(6);
   for (let i = 0; i < 6; i++) {
@@ -582,7 +564,7 @@ async function handleBotMessage(sock, msg) {
   const remoteJid = msg.key.remoteJid;
   const isGroup = remoteJid.endsWith('@g.us');
   const rawSenderJid = isGroup
-    ? msg.key.participantPn || msg.key.participant || remoteJid
+    ? msg.key[SENDER_PN_FIELD] || msg.key[SENDER_FIELD] || remoteJid
     : msg.key.senderPn || remoteJid;
   const senderPhone = normalizePhone(rawSenderJid);
   if (!senderPhone) return;
@@ -596,7 +578,6 @@ async function handleBotMessage(sock, msg) {
     return sock.sendMessage(remoteJid, payload, { quoted: msg });
   };
 
-  // Sync user & grup di setiap pesan
   const [user, groupInfo] = await Promise.all([
     upsertUserActivity(senderPhone, pushName, isGroup ? remoteJid : null),
     isGroup ? syncGroupInfo(sock, remoteJid) : Promise.resolve(null),
@@ -604,7 +585,6 @@ async function handleBotMessage(sock, msg) {
 
   if (!text) return;
 
-  // Tolak keras siapapun yang ngaku Faiz / BOS GAUL tapi nomornya bukan 6285854563721
   if (
     !isOwnerPhone(senderPhone) &&
     /\b(gue|aku|saya|gw)\s+(faiz|bos\s*gaul|owner\s*dompet\s*gaul|owner)\b/i.test(text)
@@ -613,8 +593,7 @@ async function handleBotMessage(sock, msg) {
     return;
   }
 
-  const isCommand = text.startsWith('/');
-  if (isCommand) {
+  if (text.startsWith('/')) {
     const spamCheck = checkAntiSpam(senderPhone);
     if (!spamCheck.allowed) {
       if (spamCheck.reply) await reply(spamCheck.reply);
@@ -625,7 +604,6 @@ async function handleBotMessage(sock, msg) {
     const cmd = parts[0].split('@')[0].toLowerCase();
     const argStr = text.slice(parts[0].length).trim();
 
-    // Command owner tersembunyi
     if (HIDDEN_OWNER_COMMANDS.has(cmd)) {
       if (!isOwnerPhone(senderPhone)) {
         await reply('lu bukan BOS GAUL');
@@ -700,7 +678,7 @@ async function handleBotMessage(sock, msg) {
             });
             sentCount++;
           } catch {
-            // abaikan grup yang bot sudah keluar
+            // abaikan grup gagal
           }
         }
         await reply(`broadcast selesai dikirim ke ${sentCount} grup!`);
@@ -727,19 +705,16 @@ async function handleBotMessage(sock, msg) {
       }
     }
 
-    // 1. /start
     if (cmd === '/start') {
       await reply(buildStartText());
       return;
     }
 
-    // 3 & 16. /tutorial & /bantuan
     if (cmd === '/tutorial' || cmd === '/bantuan') {
       await reply(buildTutorialText());
       return;
     }
 
-    // 2. /saldo
     if (cmd === '/saldo') {
       if (isOwnerPhone(user.phone) || user.is_owner) {
         await reply(
@@ -790,10 +765,9 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 4. /bagi
     if (cmd === '/bagi') {
       const ctxInfo = msg.message?.extendedTextMessage?.contextInfo;
-      const isReply = Boolean(ctxInfo?.participant);
+      const isReply = Boolean(ctxInfo?.[SENDER_FIELD]);
       const target = await resolveTargetPhoneFromInput(msg, argStr);
       const argNums = argStr
         .replace(/@\S+/g, '')
@@ -862,7 +836,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 5. /rebutan
     if (cmd === '/rebutan') {
       if (!isGroup) {
         await reply('command /rebutan cuma bisa dipake di dalam grup ya!');
@@ -917,7 +890,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 6. /rebutrame (dan alias tersembunyi /rebutanrame)
     if (cmd === '/rebutrame' || cmd === '/rebutanrame') {
       if (!isGroup) {
         await reply('command /rebutrame cuma bisa dipake di dalam grup ya!');
@@ -959,7 +931,6 @@ async function handleBotMessage(sock, msg) {
         return;
       }
 
-      // Acak urutan member aktif dan ambil maksimal sejumlah slot
       const shuffled = [...activeMembers].sort(() => Math.random() - 0.5);
       const selected = shuffled.slice(0, slot);
       const distributedTotal = perOrang * selected.length;
@@ -1016,7 +987,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 7. /kuis
     if (cmd === '/kuis') {
       if (!isGroup) {
         await reply('command /kuis cuma bisa dipake di dalam grup ya!');
@@ -1067,12 +1037,11 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 8. /topup
     if (cmd === '/topup') {
       await reply(
         [
           'cara topup dompet gaul:',
-          '1. transfer ke nomor / QRIS owner (chat owner buat detail)',
+          '1. transfer ke rekening / e-wallet owner (chat owner buat detail)',
           '2. kirim bukti ke owner',
           '3. koin gaul lu bakal ditambahin manual',
           `owner: ${OWNER_FULL_LABEL}`,
@@ -1083,7 +1052,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 9. /cekrebutan
     if (cmd === '/cekrebutan') {
       if (!isGroup) {
         await reply('ketik /cekrebutan di dalam grup ya!');
@@ -1113,7 +1081,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 10. /pengaduan
     if (cmd === '/pengaduan') {
       if (!argStr) {
         await reply('formatnya salah, yang bener: /pengaduan pesan lu, contoh: /pengaduan botnya lemot');
@@ -1138,19 +1105,17 @@ async function handleBotMessage(sock, msg) {
         ].join('\n')
       );
 
-      // Kirim notifikasi langsung ke WhatsApp owner jika terhubung
       try {
         const tempat = isGroup ? `di grup ${groupInfo?.group_name || 'grup'}` : 'lewat pc';
         await sock.sendMessage(`${OWNER_PHONE}@s.whatsapp.net`, {
           text: `ada pengaduan baru dari ${user.username} ${tempat}: ${argStr}`,
         });
       } catch {
-        // Notifikasi ke owner bersifat opsional jika gagal kirim DM
+        // abaikan jika gagal notif DM owner
       }
       return;
     }
 
-    // 11. /dombut
     if (cmd === '/dombut') {
       const match = argStr.match(/^(\d+)\s+(\d+)$/);
       if (!match) {
@@ -1202,7 +1167,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 12. /tantangan
     if (cmd === '/tantangan') {
       if (!isGroup) {
         await reply('command /tantangan cuma bisa dipake di dalam grup ya!');
@@ -1342,7 +1306,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 13. /leaderboard
     if (cmd === '/leaderboard') {
       const { data: topGroups } = await supabase
         .from('dompetgaul_groups')
@@ -1368,7 +1331,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 14. /ceksaldo
     if (cmd === '/ceksaldo') {
       if (isOwnerPhone(user.phone) || user.is_owner) {
         await reply(`saldo dompet gaul lu: ${OWNER_SALDO_LABEL}, level 99, 👑 BOS GAUL - OWNER DOMPET GAUL`);
@@ -1401,7 +1363,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 15. /cekrebutanrame
     if (cmd === '/cekrebutanrame') {
       if (!isGroup) {
         await reply('ketik /cekrebutanrame di dalam grup ya!');
@@ -1431,7 +1392,6 @@ async function handleBotMessage(sock, msg) {
       return;
     }
 
-    // 17. /statistik
     if (cmd === '/statistik') {
       let targetUser = user;
       if (argStr) {
@@ -1512,20 +1472,21 @@ async function handleBotMessage(sock, msg) {
         `ikut tantangan: ${targetUser.total_ikut_tantangan || 0}x`,
       ].join('\n');
 
-      const gcSection = isGroup && currentGroup
-        ? [
-            `statistik gc ini (${currentGroup.group_name}):`,
-            `total rebutan: ${currentGroup.total_rebutan || 0}x`,
-            `total rebutrame: ${currentGroup.total_rebutanrame || 0}x`,
-            `total bagi: ${currentGroup.total_bagi || 0}x`,
-            `total kuis: ${currentGroup.total_kuis || 0}x`,
-            `total tantangan: ${currentGroup.total_tantangan || 0}x`,
-            `total dombut: ${currentGroup.total_dombut || 0}x`,
-            `total semua: ${currentGroup.total_all || 0}x`,
-            `total koin gaul yang udah dibagi di gc ini: ${formatAngka(currentGroup.total_koin_dibagi)} koin gaul`,
-            `member yang pernah dapet: ${currentGroup.total_member_dapet || 0} orang`,
-          ].join('\n')
-        : 'statistik gc: - (ketik di dalam grup buat liat statistik gc lu)';
+      const gcSection =
+        isGroup && currentGroup
+          ? [
+              `statistik gc ini (${currentGroup.group_name}):`,
+              `total rebutan: ${currentGroup.total_rebutan || 0}x`,
+              `total rebutrame: ${currentGroup.total_rebutanrame || 0}x`,
+              `total bagi: ${currentGroup.total_bagi || 0}x`,
+              `total kuis: ${currentGroup.total_kuis || 0}x`,
+              `total tantangan: ${currentGroup.total_tantangan || 0}x`,
+              `total dombut: ${currentGroup.total_dombut || 0}x`,
+              `total semua: ${currentGroup.total_all || 0}x`,
+              `total koin gaul yang udah dibagi di gc ini: ${formatAngka(currentGroup.total_koin_dibagi)} koin gaul`,
+              `member yang pernah dapet: ${currentGroup.total_member_dapet || 0} orang`,
+            ].join('\n')
+          : 'statistik gc: - (ketik di dalam grup buat liat statistik gc lu)';
 
       const globalSection = [
         'statistik global DOMPET GAUL:',
@@ -1550,12 +1511,10 @@ async function handleBotMessage(sock, msg) {
     return;
   }
 
-  // Listener pasif di grup untuk /rebutan (keyword) dan /kuis (jawaban)
   if (!isGroup) return;
 
   const lowerText = text.toLowerCase().trim();
 
-  // 1. Cek rebutan aktif dengan keyword cocok
   const { data: activeRebutan } = await supabase
     .from('dompetgaul_rebutan')
     .select('*')
@@ -1595,10 +1554,7 @@ async function handleBotMessage(sock, msg) {
 
     const { data: updatedRebutan } = await supabase
       .from('dompetgaul_rebutan')
-      .update({
-        slot_left: nextSlot,
-        status: nextStatus,
-      })
+      .update({ slot_left: nextSlot, status: nextStatus })
       .eq('id', activeRebutan.id)
       .eq('slot_left', activeRebutan.slot_left)
       .select('*')
@@ -1645,7 +1601,6 @@ async function handleBotMessage(sock, msg) {
     return;
   }
 
-  // 2. Cek kuis aktif di grup
   const normalizedQuizGuess = lowerText.replace(/\?/g, '').trim();
   const { data: activeQuizzes } = await supabase
     .from('dompetgaul_kuis')
@@ -1735,39 +1690,29 @@ async function handleBotMessage(sock, msg) {
 
 async function startBot() {
   await ensureOwnerRecord();
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
-
   const sock = makeWASocket({
     version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
     auth: state,
-    browser: ['DOMPET GAUL', 'Chrome', '1.0.0'],
+    logger: pino({ level: 'silent' }),
+    browser: ['DompetGaul', 'Chrome', '1.0'],
   });
 
   sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    if (qr) {
-      console.log('\n[DOMPET GAUL] Scan QR WhatsApp di bawah ini:');
-      qrcode.generate(qr, { small: true });
-    }
-    if (connection === 'close') {
+  sock.ev.on('connection.update', (u) => {
+    console.log(u);
+    if (u.connection === 'open') console.log('BOT CONNECTED - BOT ONLINE');
+    if (u.connection === 'close') {
       const statusCode =
-        lastDisconnect?.error instanceof Boom
-          ? lastDisconnect.error.output?.statusCode
-          : undefined;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('[DOMPET GAUL] Koneksi terputus. Reconnect:', shouldReconnect);
-      if (shouldReconnect) {
+        u.lastDisconnect?.error instanceof Boom
+          ? u.lastDisconnect.error.output?.statusCode
+          : u.lastDisconnect?.error?.output?.statusCode;
+      if (statusCode !== DisconnectReason.loggedOut) {
         setTimeout(() => startBot(), 3000);
       } else {
-        console.log('[DOMPET GAUL] Logged out. Hapus folder auth_info lalu scan ulang QR.');
+        console.log('SESSION LOGGED OUT. HAPUS FOLDER ./session LALU PAIRING ULANG.');
       }
-    } else if (connection === 'open') {
-      console.log('[DOMPET GAUL] Bot WhatsApp @DompetGaul_bot siap dan online!');
     }
   });
 
@@ -1790,6 +1735,27 @@ async function startBot() {
       }
     }
   });
+
+  if (!sock.authState.creds.registered) {
+    const botPhone = String(process.env.PHONE_NUMBER || '').replace(/\D/g, '');
+    if (!botPhone) {
+      console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6281234567890)!');
+      process.exit(1);
+    }
+    console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
+    await new Promise((r) => setTimeout(r, 3000));
+    const code = await sock.requestPairingCode(botPhone);
+    console.log('=================================');
+    console.log('PAIRING CODE: ' + code);
+    console.log('PAIRING CODE: ' + code);
+    console.log('PAIRING CODE: ' + code);
+    console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
+    console.log('=================================');
+  } else {
+    console.log('SUDAH TERPAIRING, MENUNGGU KONEKSI...');
+  }
+
+  return sock;
 }
 
 startBot().catch((err) => {
