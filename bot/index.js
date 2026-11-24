@@ -11,6 +11,7 @@ const { Boom } = require('@hapi/boom');
 const { createClient } = require('@supabase/supabase-js');
 const pino = require('pino');
 const crypto = require('crypto');
+const fs = require('fs');
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim();
 const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || '').trim();
@@ -41,6 +42,8 @@ const OWNER_KOIN_VALUE = 999999999;
 
 const SENDER_FIELD = String.fromCharCode(112, 97, 114, 116, 105, 99, 105, 112, 97, 110, 116);
 const SENDER_PN_FIELD = `${SENDER_FIELD}Pn`;
+const PAIRING_TIMEOUT_FIELD = `${String.fromCharCode(113, 114)}Timeout`;
+const PAIRING_TTL_MS = 3 * 60 * 1000; // 3 menit (180 detik)
 
 const HIDDEN_OWNER_COMMANDS = new Set([
   '/tambah',
@@ -2058,7 +2061,7 @@ async function handleBotMessage(sock, msg) {
   }
 }
 
-async function requestCodeSafely(sock, botPhone, isClosed) {
+async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued) {
   for (let attempt = 1; attempt <= 5; attempt++) {
     if (isClosed() || sock.authState.creds.registered) return true;
     const waitMs = attempt === 1 ? 3000 : 2500;
@@ -2076,8 +2079,12 @@ async function requestCodeSafely(sock, botPhone, isClosed) {
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
+      console.log('Kode pairing ini berlaku selama 3 menit (180 detik).');
       console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
       console.log('=================================');
+      if (typeof onCodeIssued === 'function') {
+        onCodeIssued(code);
+      }
       return true;
     } catch (err) {
       console.log(
@@ -2102,18 +2109,30 @@ async function startBot() {
     auth: state,
     logger: pino({ level: 'silent' }),
     browser: Browsers.ubuntu('Chrome'),
-    connectTimeoutMs: 60000,
+    connectTimeoutMs: PAIRING_TTL_MS,
+    defaultQueryTimeoutMs: undefined,
+    keepAliveIntervalMs: 30000,
+    [PAIRING_TIMEOUT_FIELD]: PAIRING_TTL_MS,
     syncFullHistory: false,
   });
 
   let closed = false;
   let restarted = false;
   let pairingStarted = false;
+  let pairingExpiryTimer = null;
+
+  const clearPairingTimer = () => {
+    if (pairingExpiryTimer) {
+      clearTimeout(pairingExpiryTimer);
+      pairingExpiryTimer = null;
+    }
+  };
 
   const scheduleRestart = (delayMs = 5000) => {
     if (restarted) return;
     restarted = true;
     closed = true;
+    clearPairingTimer();
     try {
       sock.ws?.close();
     } catch {
@@ -2141,7 +2160,20 @@ async function startBot() {
     }
     pairingStarted = true;
     console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
-    requestCodeSafely(sock, botPhone, () => closed).then((ok) => {
+    requestCodeSafely(sock, botPhone, () => closed, () => {
+      clearPairingTimer();
+      pairingExpiryTimer = setTimeout(() => {
+        if (!closed && !sock.authState.creds.registered) {
+          console.log('PAIRING CODE 3 MENIT SUDAH EXPIRED, MEMBUAT KODE BARU...');
+          try {
+            fs.rmSync('./session', { recursive: true, force: true });
+          } catch {
+            // abaikan error hapus session sementara
+          }
+          scheduleRestart(2000);
+        }
+      }, PAIRING_TTL_MS);
+    }).then((ok) => {
       if (!ok && !closed && !sock.authState.creds.registered) {
         console.log('GAGAL MENDAPATKAN PAIRING CODE, MENGULANG KONEKSI DALAM 5 DETIK...');
         scheduleRestart(5000);
@@ -2159,24 +2191,41 @@ async function startBot() {
 
   sock.ev.on('connection.update', (u) => {
     try {
-      console.log(u);
+      const statusCode =
+        u.lastDisconnect?.error instanceof Boom
+          ? u.lastDisconnect.error.output?.statusCode
+          : u.lastDisconnect?.error?.output?.statusCode;
+      if (u.connection) {
+        console.log(
+          `[DOMPET GAUL] Status koneksi: ${u.connection}${statusCode ? ` (code: ${statusCode})` : ''}`
+        );
+      }
       if (u.connection === 'connecting' && !sock.authState.creds.registered) {
         triggerPairingIfNeeded();
       }
       if (u.connection === 'open') {
+        clearPairingTimer();
         console.log('BOT CONNECTED - BOT ONLINE');
       }
       if (u.connection === 'close') {
         closed = true;
-        const statusCode =
-          u.lastDisconnect?.error instanceof Boom
-            ? u.lastDisconnect.error.output?.statusCode
-            : u.lastDisconnect?.error?.output?.statusCode;
+        clearPairingTimer();
+        if (statusCode === DisconnectReason.restartRequired || sock.authState.creds.registered) {
+          if (statusCode !== DisconnectReason.loggedOut) {
+            console.log(`KONEKSI TERPUTUS (status ${statusCode || 'unknown'}), RECONNECT DALAM 5 DETIK...`);
+            scheduleRestart(5000);
+            return;
+          }
+        }
         if (!sock.authState.creds.registered) {
+          if (statusCode === DisconnectReason.loggedOut || statusCode === 408) {
+            try {
+              fs.rmSync('./session', { recursive: true, force: true });
+            } catch {
+              // abaikan error hapus session sementara
+            }
+          }
           console.log('KONEKSI TERTUTUP SEBELUM PAIRING SELESAI, MENGULANG DALAM 5 DETIK...');
-          scheduleRestart(5000);
-        } else if (statusCode !== DisconnectReason.loggedOut) {
-          console.log(`KONEKSI TERPUTUS (status ${statusCode || 'unknown'}), RECONNECT DALAM 5 DETIK...`);
           scheduleRestart(5000);
         } else {
           console.log('SESSION LOGGED OUT. HAPUS FOLDER ./session LALU PAIRING ULANG.');
