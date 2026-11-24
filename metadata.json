@@ -1,0 +1,6 @@
+{
+  "name": "DOMPET GAUL",
+  "description": "dompet gaul, bagi-bagi gak pake jaim",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
