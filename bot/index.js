@@ -1,3 +1,4 @@
+global.WebSocket = require('ws');
 require('dotenv').config();
 const {
   makeWASocket,
@@ -1702,6 +1703,7 @@ async function startBot() {
     browser: ['DompetGaul', 'Chrome', '1.0'],
   });
 
+  let restarted = false;
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', (u) => {
     console.log(u);
@@ -1711,8 +1713,17 @@ async function startBot() {
         u.lastDisconnect?.error instanceof Boom
           ? u.lastDisconnect.error.output?.statusCode
           : u.lastDisconnect?.error?.output?.statusCode;
-      if (statusCode !== DisconnectReason.loggedOut) {
-        setTimeout(() => startBot(), 3000);
+      if (!sock.authState.creds.registered) {
+        if (!restarted) {
+          restarted = true;
+          console.log('KONEKSI TERTUTUP SEBELUM PAIRING SELESAI, MENGULANG DALAM 5 DETIK...');
+          setTimeout(() => startBot(), 5000);
+        }
+      } else if (statusCode !== DisconnectReason.loggedOut) {
+        if (!restarted) {
+          restarted = true;
+          setTimeout(() => startBot(), 5000);
+        }
       } else {
         console.log('SESSION LOGGED OUT. HAPUS FOLDER ./session LALU PAIRING ULANG.');
       }
@@ -1747,7 +1758,8 @@ async function startBot() {
     }
     console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
     await new Promise((r) => setTimeout(r, 3000));
-    const code = await sock.requestPairingCode(botPhone);
+    const rawCode = await sock.requestPairingCode(botPhone);
+    const code = String(rawCode || '').match(/.{1,4}/g)?.join('-') || rawCode;
     console.log('=================================');
     console.log('PAIRING CODE: ' + code);
     console.log('PAIRING CODE: ' + code);
