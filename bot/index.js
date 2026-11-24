@@ -5,6 +5,7 @@ const {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason,
+  Browsers,
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 const { createClient } = require('@supabase/supabase-js');
@@ -1698,38 +1699,108 @@ async function handleBotMessage(sock, msg) {
   }
 }
 
+async function requestCodeSafely(sock, botPhone, isClosed) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (isClosed() || sock.authState.creds.registered) return true;
+    const waitMs = attempt === 1 ? 3000 : 2500;
+    await new Promise((r) => setTimeout(r, waitMs));
+    let wsWait = 0;
+    while (!isClosed() && !sock.authState.creds.registered && sock.ws && sock.ws.isOpen === false && wsWait < 10000) {
+      await new Promise((r) => setTimeout(r, 500));
+      wsWait += 500;
+    }
+    if (isClosed() || sock.authState.creds.registered) return true;
+    try {
+      const rawCode = await sock.requestPairingCode(botPhone);
+      const code = String(rawCode || '').match(/.{1,4}/g)?.join('-') || rawCode;
+      console.log('=================================');
+      console.log('PAIRING CODE: ' + code);
+      console.log('PAIRING CODE: ' + code);
+      console.log('PAIRING CODE: ' + code);
+      console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
+      console.log('=================================');
+      return true;
+    } catch (err) {
+      console.log(
+        `[DOMPET GAUL] Pairing code belum siap (#${attempt}): ${err?.message || err}`
+      );
+    }
+  }
+  return false;
+}
+
 async function startBot() {
-  await ensureOwnerRecord();
+  try {
+    await ensureOwnerRecord();
+  } catch (err) {
+    console.error('[DOMPET GAUL] Gagal sync owner awal:', err?.message || err);
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   const { version } = await fetchLatestBaileysVersion();
   const sock = makeWASocket({
     version,
     auth: state,
     logger: pino({ level: 'silent' }),
-    browser: ['DompetGaul', 'Chrome', '1.0'],
+    browser: Browsers.ubuntu('Chrome'),
+    connectTimeoutMs: 60000,
+    syncFullHistory: false,
   });
 
+  let closed = false;
   let restarted = false;
+  let pairingStarted = false;
+
+  const scheduleRestart = (delayMs = 5000) => {
+    if (restarted) return;
+    restarted = true;
+    closed = true;
+    try {
+      sock.ws?.close();
+    } catch {
+      // abaikan error saat menutup ws lama
+    }
+    setTimeout(() => startBot(), delayMs);
+  };
+
+  const botPhone = String(process.env.PHONE_NUMBER || BOT_PHONE_DEFAULT).replace(/\D/g, '');
+
+  const triggerPairingIfNeeded = () => {
+    if (pairingStarted || closed || sock.authState.creds.registered) return;
+    if (!botPhone) {
+      console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6285743794723)!');
+      return;
+    }
+    pairingStarted = true;
+    console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
+    requestCodeSafely(sock, botPhone, () => closed).then((ok) => {
+      if (!ok && !closed && !sock.authState.creds.registered) {
+        console.log('GAGAL MENDAPATKAN PAIRING CODE, MENGULANG KONEKSI DALAM 5 DETIK...');
+        scheduleRestart(5000);
+      }
+    });
+  };
+
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', (u) => {
     console.log(u);
-    if (u.connection === 'open') console.log('BOT CONNECTED - BOT ONLINE');
+    if (u.connection === 'connecting' && !sock.authState.creds.registered) {
+      triggerPairingIfNeeded();
+    }
+    if (u.connection === 'open') {
+      console.log('BOT CONNECTED - BOT ONLINE');
+    }
     if (u.connection === 'close') {
+      closed = true;
       const statusCode =
         u.lastDisconnect?.error instanceof Boom
           ? u.lastDisconnect.error.output?.statusCode
           : u.lastDisconnect?.error?.output?.statusCode;
       if (!sock.authState.creds.registered) {
-        if (!restarted) {
-          restarted = true;
-          console.log('KONEKSI TERTUTUP SEBELUM PAIRING SELESAI, MENGULANG DALAM 5 DETIK...');
-          setTimeout(() => startBot(), 5000);
-        }
+        console.log('KONEKSI TERTUTUP SEBELUM PAIRING SELESAI, MENGULANG DALAM 5 DETIK...');
+        scheduleRestart(5000);
       } else if (statusCode !== DisconnectReason.loggedOut) {
-        if (!restarted) {
-          restarted = true;
-          setTimeout(() => startBot(), 5000);
-        }
+        scheduleRestart(5000);
       } else {
         console.log('SESSION LOGGED OUT. HAPUS FOLDER ./session LALU PAIRING ULANG.');
       }
@@ -1757,21 +1828,7 @@ async function startBot() {
   });
 
   if (!sock.authState.creds.registered) {
-    const botPhone = String(process.env.PHONE_NUMBER || BOT_PHONE_DEFAULT).replace(/\D/g, '');
-    if (!botPhone) {
-      console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6285743794723)!');
-      process.exit(1);
-    }
-    console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
-    await new Promise((r) => setTimeout(r, 3000));
-    const rawCode = await sock.requestPairingCode(botPhone);
-    const code = String(rawCode || '').match(/.{1,4}/g)?.join('-') || rawCode;
-    console.log('=================================');
-    console.log('PAIRING CODE: ' + code);
-    console.log('PAIRING CODE: ' + code);
-    console.log('PAIRING CODE: ' + code);
-    console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
-    console.log('=================================');
+    triggerPairingIfNeeded();
   } else {
     console.log('SUDAH TERPAIRING, MENUNGGU KONEKSI...');
   }
@@ -1780,6 +1837,6 @@ async function startBot() {
 }
 
 startBot().catch((err) => {
-  console.error('[DOMPET GAUL] Fatal startup error:', err);
-  process.exit(1);
+  console.error('[DOMPET GAUL] Error startup, mengulang dalam 5 detik:', err?.message || err);
+  setTimeout(() => startBot(), 5000);
 });
