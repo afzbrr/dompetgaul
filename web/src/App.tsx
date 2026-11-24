@@ -18,6 +18,7 @@ import { LeaderboardView } from './components/LeaderboardView';
 import { PengaduanOwnerView } from './components/PengaduanOwnerView';
 import { StatistikView } from './components/StatistikView';
 import {
+  BOT_DISPLAY_PHONE,
   COMMANDS_17,
   DompetGaulGroup,
   DompetGaulKuis,
@@ -376,8 +377,11 @@ export default function App() {
               </div>
             </section>
 
-            {/* Info Owner */}
+            {/* Info Bot & Owner */}
             <section className="rounded-2xl bg-[#fff9fb] p-4 text-xs text-[#6b4f5d] space-y-1">
+              <p className="font-semibold text-[#1a1015]">
+                bot: @DompetGaul_bot ({BOT_DISPLAY_PHONE})
+              </p>
               <p className="font-semibold text-[#1a1015]">owner: 👑 BOS GAUL - FAIZ</p>
               <p>topup atau pengaduan? chat owner di {OWNER_DISPLAY_PHONE}</p>
             </section>

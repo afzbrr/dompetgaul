@@ -23,6 +23,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
+const BOT_PHONE_DEFAULT = '6285743794723';
+const BOT_DISPLAY = '085743794723';
 const OWNER_PHONE = '6285854563721';
 const OWNER_DISPLAY = '085854563721';
 const OWNER_FULL_LABEL = '👑 BOS GAUL - FAIZ';
@@ -171,6 +173,7 @@ function buildStartText() {
   return [
     'halo! gue DOMPET GAUL 👛',
     'dompet gaul, bagi-bagi gak pake jaim',
+    `bot: @DompetGaul_bot (${BOT_DISPLAY})`,
     `owner: ${OWNER_FULL_LABEL}`,
     '',
     'menu utama:',
@@ -1737,9 +1740,9 @@ async function startBot() {
   });
 
   if (!sock.authState.creds.registered) {
-    const botPhone = String(process.env.PHONE_NUMBER || '').replace(/\D/g, '');
+    const botPhone = String(process.env.PHONE_NUMBER || BOT_PHONE_DEFAULT).replace(/\D/g, '');
     if (!botPhone) {
-      console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6281234567890)!');
+      console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6285743794723)!');
       process.exit(1);
     }
     console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');

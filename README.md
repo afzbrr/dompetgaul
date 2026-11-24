@@ -205,7 +205,7 @@ on conflict (phone) do update set
 3. Railway akan membaca `/bot/railway.json` dan menjalankan `node index.js` tanpa web server/Express.
 4. (Disarankan) Pasang **Railway Volume** ke `/app/session` agar sesi WhatsApp di `./session` tetap tersimpan saat redeploy.
 5. Tambahkan **Variables**:
-   - `PHONE_NUMBER` = nomor WhatsApp bot tanpa `+` (contoh: `6281234567890`)
+   - `PHONE_NUMBER` = `6285743794723` (nomor bot WhatsApp `085743794723`, tanpa `+`)
    - `SUPABASE_URL` = URL project Supabase
    - `SUPABASE_SERVICE_KEY` = Service Role Key Supabase
    - `WEB_URL` = URL Vercel dashboard (contoh: `https://dompetgaul.vercel.app`)

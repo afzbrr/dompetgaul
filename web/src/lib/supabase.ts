@@ -12,6 +12,8 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)
   : null;
 
+export const BOT_PHONE = '6285743794723';
+export const BOT_DISPLAY_PHONE = '085743794723';
 export const OWNER_PHONE = '6285854563721';
 export const OWNER_DISPLAY_PHONE = '085854563721';
 
