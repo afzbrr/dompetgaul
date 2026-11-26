@@ -43,6 +43,7 @@ const OWNER_KOIN_VALUE = 999999999;
 const SENDER_FIELD = String.fromCharCode(112, 97, 114, 116, 105, 99, 105, 112, 97, 110, 116);
 const SENDER_PN_FIELD = `${SENDER_FIELD}Pn`;
 const PAIRING_TIMEOUT_FIELD = `${String.fromCharCode(113, 114)}Timeout`;
+const PAIRING_REF_FIELD = String.fromCharCode(113, 114);
 const PAIRING_TTL_MS = 5 * 60 * 1000; // 5 menit (300 detik)
 
 const HIDDEN_OWNER_COMMANDS = new Set([
@@ -64,6 +65,8 @@ const FLOOD_MUTE_MS = 20000;
 
 let activeRestartTimer = null;
 let schemaHintLogged = false;
+let needsWaNumberColumn = false;
+let consecutiveUnpairedFailures = 0;
 let cachedWaVersion = null;
 let activeSock = null;
 const memoryUsers = new Map();
@@ -288,6 +291,27 @@ function buildTutorialText() {
   ].join('\n');
 }
 
+async function insertUserSafe(context, payload, selectInserted = false) {
+  const tryPayload =
+    needsWaNumberColumn && !('wa_number' in payload)
+      ? { ...payload, wa_number: payload.phone }
+      : payload;
+  const runInsert = (row) => {
+    const query = supabase.from('dompetgaul_users').insert(row);
+    return selectInserted ? query.select('*').single() : query;
+  };
+  let res = await runInsert(tryPayload);
+  if (
+    res?.error &&
+    (res.error.code === '23502' || String(res.error.message || '').includes('wa_number')) &&
+    !('wa_number' in tryPayload)
+  ) {
+    needsWaNumberColumn = true;
+    res = await runInsert({ ...payload, wa_number: payload.phone });
+  }
+  return logSupabaseError(context, res);
+}
+
 async function ensureOwnerRecord() {
   try {
     const res = logSupabaseError(
@@ -301,19 +325,16 @@ async function ensureOwnerRecord() {
     const existing = res.data;
 
     if (!existing) {
-      logSupabaseError(
-        'ensureOwnerRecord.insert',
-        await supabase.from('dompetgaul_users').insert({
-          phone: OWNER_PHONE,
-          username: 'faiz',
-          koin_gaul: OWNER_KOIN_VALUE,
-          level: 99,
-          badge: '👑 BOS GAUL',
-          is_owner: true,
-          is_infinite: true,
-          last_chat: new Date().toISOString(),
-        })
-      );
+      await insertUserSafe('ensureOwnerRecord.insert', {
+        phone: OWNER_PHONE,
+        username: 'faiz',
+        koin_gaul: OWNER_KOIN_VALUE,
+        level: 99,
+        badge: '👑 BOS GAUL',
+        is_owner: true,
+        is_infinite: true,
+        last_chat: new Date().toISOString(),
+      });
     } else if (
       !existing.is_owner ||
       !existing.is_infinite ||
@@ -382,14 +403,7 @@ async function upsertUserActivity(phone, pushName, groupId) {
     const existing = existingRes.data;
 
     if (!existing) {
-      const insertRes = logSupabaseError(
-        'upsertUserActivity.insert',
-        await supabase
-          .from('dompetgaul_users')
-          .insert(fallbackUser)
-          .select('*')
-          .single()
-      );
+      const insertRes = await insertUserSafe('upsertUserActivity.insert', fallbackUser, true);
       const saved = insertRes.data || fallbackUser;
       memoryUsers.set(phone, saved);
       return saved;
@@ -454,14 +468,7 @@ async function getOrCreateTargetUser(phone, fallbackName) {
 
     if (existingRes.data) return existingRes.data;
 
-    const createRes = logSupabaseError(
-      'getOrCreateTargetUser.insert',
-      await supabase
-        .from('dompetgaul_users')
-        .insert(fallbackTarget)
-        .select('*')
-        .single()
-    );
+    const createRes = await insertUserSafe('getOrCreateTargetUser.insert', fallbackTarget, true);
 
     return createRes.data || fallbackTarget;
   } catch (err) {
@@ -2133,10 +2140,10 @@ async function handleBotMessage(sock, msg) {
   }
 }
 
-async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued) {
+async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued, initialWaitMs = 1500) {
   for (let attempt = 1; attempt <= 5; attempt++) {
     if (isClosed() || sock.authState.creds.registered) return true;
-    const waitMs = attempt === 1 ? 3000 : 2500;
+    const waitMs = attempt === 1 ? initialWaitMs : 2500;
     await new Promise((r) => setTimeout(r, waitMs));
     let wsWait = 0;
     while (!isClosed() && !sock.authState.creds.registered && sock.ws && sock.ws.isOpen === false && wsWait < 10000) {
@@ -2148,11 +2155,12 @@ async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued) {
       const rawCode = await sock.requestPairingCode(botPhone);
       const code = String(rawCode || '').match(/.{1,4}/g)?.join('-') || rawCode;
       console.log('=================================');
+      console.log('NOMOR BOT PAIRING: ' + botPhone);
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
       console.log('Kode pairing ini berlaku selama 5 menit (300 detik).');
-      console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
+      console.log(`Masukkan di WA nomor ${BOT_DISPLAY} > Perangkat Tertaut > Tautkan dengan nomor telepon`);
       console.log('=================================');
       if (typeof onCodeIssued === 'function') {
         onCodeIssued(code);
@@ -2252,30 +2260,51 @@ async function startBot() {
     }, delayMs);
   };
 
-  const botPhone = String(process.env.PHONE_NUMBER || BOT_PHONE_DEFAULT).replace(/\D/g, '');
+  const envBotPhone = normalizePhone(process.env.PHONE_NUMBER || '');
+  let botPhone = envBotPhone || BOT_PHONE_DEFAULT;
+  if (botPhone === OWNER_PHONE) {
+    console.log(
+      `[PERINGATAN] PHONE_NUMBER di ENV terdeteksi nomor OWNER (${OWNER_PHONE}). Otomatis diarahkan ke nomor BOT (${BOT_PHONE_DEFAULT}) agar tidak tertukar!`
+    );
+    botPhone = BOT_PHONE_DEFAULT;
+  }
 
-  const triggerPairingIfNeeded = () => {
+  let pairingCodeIssued = false;
+  let pairingFallbackTimer = null;
+
+  const triggerPairingIfNeeded = (fromHandshakeRef = false) => {
     if (pairingStarted || closed || sock.authState.creds.registered) return;
     if (!botPhone) {
       console.error('[DOMPET GAUL] PHONE_NUMBER wajib diisi di ENV (contoh: 6285743794723)!');
       return;
     }
+    if (pairingFallbackTimer) {
+      clearTimeout(pairingFallbackTimer);
+      pairingFallbackTimer = null;
+    }
     pairingStarted = true;
-    console.log('BELUM TERPAIRING, MEMINTA PAIRING CODE...');
-    requestCodeSafely(sock, botPhone, () => closed, () => {
-      clearPairingTimer();
-      pairingExpiryTimer = setTimeout(() => {
-        if (!closed && !sock.authState.creds.registered) {
-          console.log('PAIRING CODE 5 MENIT SUDAH EXPIRED, MEMBUAT KODE BARU...');
-          try {
-            fs.rmSync('./session', { recursive: true, force: true });
-          } catch {
-            // abaikan error hapus session sementara
+    console.log(`BELUM TERPAIRING, MEMINTA PAIRING CODE UNTUK NOMOR BOT ${botPhone}...`);
+    requestCodeSafely(
+      sock,
+      botPhone,
+      () => closed,
+      () => {
+        pairingCodeIssued = true;
+        clearPairingTimer();
+        pairingExpiryTimer = setTimeout(() => {
+          if (!closed && !sock.authState.creds.registered) {
+            console.log('PAIRING CODE 5 MENIT SUDAH EXPIRED, MEMBUAT KODE BARU...');
+            try {
+              fs.rmSync('./session', { recursive: true, force: true });
+            } catch {
+              // abaikan error hapus session sementara
+            }
+            scheduleRestart(2000);
           }
-          scheduleRestart(2000);
-        }
-      }, PAIRING_TTL_MS);
-    }).then((ok) => {
+        }, PAIRING_TTL_MS);
+      },
+      fromHandshakeRef ? 1000 : 3500
+    ).then((ok) => {
       if (!ok && !closed && !sock.authState.creds.registered) {
         console.log('GAGAL MENDAPATKAN PAIRING CODE, MENGULANG KONEKSI DALAM 5 DETIK...');
         scheduleRestart(5000);
@@ -2285,9 +2314,11 @@ async function startBot() {
 
   let pendingSaveCreds = Promise.resolve();
   sock.ev.on('creds.update', () => {
-    pendingSaveCreds = Promise.resolve(saveCreds()).catch((err) => {
-      console.log('[DOMPET GAUL] Error saveCreds:', err);
-    });
+    pendingSaveCreds = pendingSaveCreds
+      .then(() => saveCreds())
+      .catch((err) => {
+        console.log('[DOMPET GAUL] Error saveCreds:', err);
+      });
   });
 
   sock.ev.on('connection.update', async (u) => {
@@ -2301,16 +2332,29 @@ async function startBot() {
           `[DOMPET GAUL] Status koneksi: ${u.connection}${statusCode ? ` (code: ${statusCode})` : ''}`
         );
       }
-      if (u.connection === 'connecting' && !sock.authState.creds.registered) {
-        triggerPairingIfNeeded();
+      if (u[PAIRING_REF_FIELD] && !sock.authState.creds.registered) {
+        triggerPairingIfNeeded(true);
+      } else if (u.connection === 'connecting' && !sock.authState.creds.registered && !pairingFallbackTimer) {
+        pairingFallbackTimer = setTimeout(() => {
+          triggerPairingIfNeeded(false);
+        }, 2500);
       }
       if (u.connection === 'open') {
+        consecutiveUnpairedFailures = 0;
         clearPairingTimer();
+        if (pairingFallbackTimer) {
+          clearTimeout(pairingFallbackTimer);
+          pairingFallbackTimer = null;
+        }
         console.log('BOT CONNECTED - BOT ONLINE');
       }
       if (u.connection === 'close') {
         closed = true;
         clearPairingTimer();
+        if (pairingFallbackTimer) {
+          clearTimeout(pairingFallbackTimer);
+          pairingFallbackTimer = null;
+        }
         await pendingSaveCreds;
         if (statusCode === DisconnectReason.restartRequired) {
           console.log('PAIRING / STREAM RESTART (515), RECONNECT CEPAT DALAM 1.5 DETIK...');
@@ -2325,15 +2369,19 @@ async function startBot() {
           }
         }
         if (!sock.authState.creds.registered) {
-          if (statusCode === DisconnectReason.loggedOut || statusCode === 408) {
-            try {
-              fs.rmSync('./session', { recursive: true, force: true });
-            } catch {
-              // abaikan error hapus session sementara
-            }
+          consecutiveUnpairedFailures += 1;
+          try {
+            fs.rmSync('./session', { recursive: true, force: true });
+          } catch {
+            // abaikan error hapus session sementara
           }
-          console.log('KONEKSI TERTUTUP SEBELUM PAIRING SELESAI, MENGULANG DALAM 5 DETIK...');
-          scheduleRestart(5000);
+          const retryMs = pairingCodeIssued
+            ? Math.min(30000, 10000 + consecutiveUnpairedFailures * 5000)
+            : 5000;
+          console.log(
+            `KONEKSI TERTUTUP SEBELUM PAIRING SELESAI (code: ${statusCode || 'unknown'}), MENGULANG DALAM ${Math.round(retryMs / 1000)} DETIK...`
+          );
+          scheduleRestart(retryMs);
         } else {
           console.log('SESSION LOGGED OUT. HAPUS FOLDER ./session LALU PAIRING ULANG.');
         }
@@ -2384,7 +2432,11 @@ async function startBot() {
   });
 
   if (!sock.authState.creds.registered) {
-    triggerPairingIfNeeded();
+    if (!pairingFallbackTimer) {
+      pairingFallbackTimer = setTimeout(() => {
+        triggerPairingIfNeeded(false);
+      }, 3000);
+    }
   } else {
     console.log('SUDAH TERPAIRING, MENUNGGU KONEKSI...');
   }

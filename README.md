@@ -190,6 +190,15 @@ alter table dompetgaul_users add column if not exists last_chat timestamptz defa
 alter table dompetgaul_users add column if not exists last_daily date;
 alter table dompetgaul_users add column if not exists created_at timestamptz default now();
 create unique index if not exists dompetgaul_users_phone_uidx on dompetgaul_users (phone);
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_name = 'dompetgaul_users' and column_name = 'wa_number'
+  ) then
+    execute 'alter table dompetgaul_users alter column wa_number drop not null';
+  end if;
+end $$;
 
 -- Seed Owner: 👑 BOS GAUL - FAIZ (085854563721)
 insert into dompetgaul_users (
