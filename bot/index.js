@@ -2180,6 +2180,18 @@ async function startBot() {
 
   void ensureOwnerRecord();
 
+  try {
+    if (fs.existsSync('./session/creds.json')) {
+      const rawCreds = JSON.parse(fs.readFileSync('./session/creds.json', 'utf8'));
+      if (!rawCreds?.registered) {
+        fs.rmSync('./session', { recursive: true, force: true });
+        console.log('[DOMPET GAUL] Membersihkan sisa session belum terpairing sebelumnya...');
+      }
+    }
+  } catch {
+    // abaikan error cek creds awal
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState('./session');
   if (!cachedWaVersion) {
     try {
@@ -2271,15 +2283,14 @@ async function startBot() {
     });
   };
 
-  sock.ev.on('creds.update', async () => {
-    try {
-      await saveCreds();
-    } catch (err) {
+  let pendingSaveCreds = Promise.resolve();
+  sock.ev.on('creds.update', () => {
+    pendingSaveCreds = Promise.resolve(saveCreds()).catch((err) => {
       console.log('[DOMPET GAUL] Error saveCreds:', err);
-    }
+    });
   });
 
-  sock.ev.on('connection.update', (u) => {
+  sock.ev.on('connection.update', async (u) => {
     try {
       const statusCode =
         u.lastDisconnect?.error instanceof Boom
@@ -2300,7 +2311,13 @@ async function startBot() {
       if (u.connection === 'close') {
         closed = true;
         clearPairingTimer();
-        if (statusCode === DisconnectReason.restartRequired || sock.authState.creds.registered) {
+        await pendingSaveCreds;
+        if (statusCode === DisconnectReason.restartRequired) {
+          console.log('PAIRING / STREAM RESTART (515), RECONNECT CEPAT DALAM 1.5 DETIK...');
+          scheduleRestart(1500);
+          return;
+        }
+        if (sock.authState.creds.registered) {
           if (statusCode !== DisconnectReason.loggedOut) {
             console.log(`KONEKSI TERPUTUS (status ${statusCode || 'unknown'}), RECONNECT DALAM 5 DETIK...`);
             scheduleRestart(5000);
