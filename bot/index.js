@@ -43,7 +43,7 @@ const OWNER_KOIN_VALUE = 999999999;
 const SENDER_FIELD = String.fromCharCode(112, 97, 114, 116, 105, 99, 105, 112, 97, 110, 116);
 const SENDER_PN_FIELD = `${SENDER_FIELD}Pn`;
 const PAIRING_TIMEOUT_FIELD = `${String.fromCharCode(113, 114)}Timeout`;
-const PAIRING_TTL_MS = 3 * 60 * 1000; // 3 menit (180 detik)
+const PAIRING_TTL_MS = 5 * 60 * 1000; // 5 menit (300 detik)
 
 const HIDDEN_OWNER_COMMANDS = new Set([
   '/tambah',
@@ -58,9 +58,8 @@ const GROUP_CACHE_TTL_MS = 60000;
 const processedMsgIds = new Set();
 
 const rateLimitMap = new Map();
-const CMD_COOLDOWN_MS = 1500;
 const FLOOD_WINDOW_MS = 10000;
-const FLOOD_MAX_COMMANDS = 5;
+const FLOOD_MAX_COMMANDS = 10;
 const FLOOD_MUTE_MS = 20000;
 
 let activeRestartTimer = null;
@@ -218,20 +217,6 @@ function checkAntiSpam(phone) {
 
   state.warned = false;
   state.timestamps = state.timestamps.filter((t) => now - t < FLOOD_WINDOW_MS);
-
-  if (now - state.lastCmd < CMD_COOLDOWN_MS) {
-    state.timestamps.push(now);
-    if (state.timestamps.length >= FLOOD_MAX_COMMANDS) {
-      state.mutedUntil = now + FLOOD_MUTE_MS;
-      state.warned = true;
-      return {
-        allowed: false,
-        reply: 'pelan-pelan woy, jangan spam command! tunggu 20 detik lagi.',
-      };
-    }
-    return { allowed: false, reply: null };
-  }
-
   state.timestamps.push(now);
   state.lastCmd = now;
 
@@ -1729,18 +1714,23 @@ async function handleBotMessage(sock, msg) {
 
         const txRes = logSupabaseError(
           'ceksaldo.selectTx',
-          await supabase
-            .from('dompetgaul_transaksi')
-            .select('*')
-            .or(`from_phone.eq.${user.phone},to_phone.eq.${user.phone}`)
-            .order('created_at', { ascending: false })
-            .limit(10)
+          await withTimeout(
+            supabase
+              .from('dompetgaul_transaksi')
+              .select('*')
+              .or(`from_phone.eq.${user.phone},to_phone.eq.${user.phone}`)
+              .order('created_at', { ascending: false })
+              .limit(10),
+            4000,
+            { data: null, error: null }
+          )
         );
-        if (txRes.error) throw txRes.error;
-        const txs = txRes.data;
+        const txs = txRes?.data;
 
         if (!txs || txs.length === 0) {
-          await reply('lu belum ada riwayat, bagi-bagi dulu gih');
+          await reply(
+            `saldo dompet gaul lu: ${formatAngka(user.koin_gaul)} koin gaul, level ${calcLevel(user.total_dapet, false)}, total dapet ${formatAngka(user.total_dapet)}, total bagi ${formatAngka(user.total_bagi)}, riwayat: belum ada riwayat transaksi`
+          );
           return;
         }
 
@@ -2161,7 +2151,7 @@ async function requestCodeSafely(sock, botPhone, isClosed, onCodeIssued) {
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
       console.log('PAIRING CODE: ' + code);
-      console.log('Kode pairing ini berlaku selama 3 menit (180 detik).');
+      console.log('Kode pairing ini berlaku selama 5 menit (300 detik).');
       console.log('Masukkan di WA > Perangkat Tertaut > Tautkan dengan nomor telepon');
       console.log('=================================');
       if (typeof onCodeIssued === 'function') {
@@ -2264,7 +2254,7 @@ async function startBot() {
       clearPairingTimer();
       pairingExpiryTimer = setTimeout(() => {
         if (!closed && !sock.authState.creds.registered) {
-          console.log('PAIRING CODE 3 MENIT SUDAH EXPIRED, MEMBUAT KODE BARU...');
+          console.log('PAIRING CODE 5 MENIT SUDAH EXPIRED, MEMBUAT KODE BARU...');
           try {
             fs.rmSync('./session', { recursive: true, force: true });
           } catch {
